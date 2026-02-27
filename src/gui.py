@@ -4,6 +4,7 @@ import json
 import datetime
 import threading
 import webbrowser
+import concurrent.futures
 from PyQt5 import QtWidgets, QtCore, QtGui
 from lib.validators import is_valid_email_syntax, has_mx_record, verify_email_smtp
 import pandas as pd
@@ -33,7 +34,11 @@ def _is_cache_stale(cache: dict) -> bool:
         return False  # old cache without timestamp — treat as fresh to avoid breaking existing sessions
     try:
         created_at = datetime.datetime.fromisoformat(created_at_str)
-        age = datetime.datetime.utcnow() - created_at
+        # Ensure both sides of the subtraction are timezone-aware
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        age = now - created_at
         return age.days >= _CACHE_MAX_AGE_DAYS
     except (ValueError, TypeError):
         return False
@@ -44,7 +49,7 @@ class ResultDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("KnowEmail - Verifying Bulk Emails")
         self.setMinimumSize(600, 400)
-        self.layout = QtWidgets.QVBoxLayout()
+        self.main_layout = QtWidgets.QVBoxLayout()
 
         # Status bar: elapsed time + progress count
         self.status_label = QtWidgets.QLabel("⏱ 0:00:00  |  0 / 0 verified")
@@ -52,21 +57,21 @@ class ResultDialog(QtWidgets.QDialog):
         font = self.status_label.font()
         font.setBold(True)
         self.status_label.setFont(font)
-        self.layout.addWidget(self.status_label)
+        self.main_layout.addWidget(self.status_label)
 
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["Email", "Status"])
         self.table.horizontalHeader().setStretchLastSection(True)
         
-        self.layout.addWidget(self.table)
+        self.main_layout.addWidget(self.table)
 
         # Pause / Resume button
         self.pause_resume_button = QtWidgets.QPushButton("⏸ Pause")
         self.pause_resume_button.setObjectName("pauseResumeButton")
-        self.layout.addWidget(self.pause_resume_button)
+        self.main_layout.addWidget(self.pause_resume_button)
 
-        self.setLayout(self.layout)
+        self.setLayout(self.main_layout)
 
         # Enable the "?" help button
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowContextHelpButtonHint)
@@ -145,8 +150,6 @@ class ResultDialog(QtWidgets.QDialog):
         help_dialog.setText(help_text)
         help_dialog.setStandardButtons(QtWidgets.QMessageBox.Ok)
         help_dialog.exec_()
-
-import concurrent.futures
 
 class SingleVerificationWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(str, bool)
@@ -362,7 +365,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
         
         donate_button = QtWidgets.QPushButton("Support Us")
         donate_button.setObjectName("donateButton")
-        donate_button.clicked.connect(lambda: webbrowser.open("https://example.com/donate"))
+        donate_button.clicked.connect(lambda: webbrowser.open("https://github.com/sponsors"))
         
         support_layout.addWidget(support_label, 0, QtCore.Qt.AlignHCenter)
         support_layout.addWidget(donate_button, 0, QtCore.Qt.AlignHCenter)
@@ -384,7 +387,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
             "verified_results": self._bulk_results,
             "elapsed_seconds": self._elapsed_seconds,
             "total_emails": self._total_emails,
-            "created_at": datetime.datetime.utcnow().isoformat(),
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         try:
             with open(self._cache_file, 'w', encoding='utf-8') as f:
@@ -660,8 +663,11 @@ class EmailValidatorApp(QtWidgets.QWidget):
     def apply_styles(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         style_path = os.path.join(current_dir, 'styles.qss')
-        with open(style_path, 'r') as f:
-            self.setStyleSheet(f.read())
+        try:
+            with open(style_path, 'r') as f:
+                self.setStyleSheet(f.read())
+        except OSError:
+            pass  # Styles are cosmetic; continue without them if the file is missing
 
     def update_verifying_text(self):
         self.result_label.setText(f"Verifying{'.' * self.verifying_counter}")
@@ -703,10 +709,6 @@ class EmailValidatorApp(QtWidgets.QWidget):
         self.email_input.setEnabled(True)
         
         self.show_popup(message)
-
-    def verify_in_background(self, email):
-        # Deprecated: Logic moved to SingleVerificationWorker
-        pass
 
     def show_popup(self, message):
         self.verifying_timer.stop()

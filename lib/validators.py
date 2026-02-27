@@ -5,21 +5,25 @@ import socket
 import concurrent.futures
 from cachetools import TTLCache
 
-# Cache for MX records
+# Cache for MX records (keyed by domain, TTL = 10 minutes)
 cache = TTLCache(maxsize=100, ttl=600)
 
 def is_valid_email_syntax(email):
-    regex = r'^\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    regex = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
     return re.match(regex, email) is not None
 
 def has_mx_record(domain):
+    if domain in cache:
+        return cache[domain]
     try:
         resolver = dns.resolver.Resolver()
         resolver.lifetime = 10.0
         mx_records = resolver.resolve(domain, 'MX')
-        return bool(mx_records)
+        result = bool(mx_records)
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.LifetimeTimeout):
-        return False
+        result = False
+    cache[domain] = result
+    return result
 
 def verify_email_smtp(email):
     domain = email.split('@')[1]
@@ -66,7 +70,9 @@ def verify_email_smtp(email):
                 OSError):  # OSError covers ssl.SSLError (TLS failures) and network errors
             return False
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # Use a bounded pool: at most len(mx_records) * len(smtp_ports) tasks
+    max_workers = min(10, len(mx_records) * len(smtp_ports))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(check_smtp, mx_record, port): (mx_record, port)
             for mx_record in mx_records
