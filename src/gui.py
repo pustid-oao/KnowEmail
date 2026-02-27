@@ -1,4 +1,5 @@
 import os
+import csv
 import webbrowser
 from PyQt5 import QtWidgets, QtCore, QtGui
 from lib.validators import is_valid_email_syntax, has_mx_record, verify_email_smtp
@@ -121,7 +122,7 @@ class BulkVerificationThread(QtCore.QThread):
         self.is_running = True
         
     def run(self):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
             future_to_email = {executor.submit(self.verify_single_email, email): email for email in self.emails if email}
             
             for future in concurrent.futures.as_completed(future_to_email):
@@ -273,7 +274,8 @@ class EmailValidatorApp(QtWidgets.QWidget):
             
         self.results_dialog = ResultDialog(self)
         self.results_dialog.show()
-        
+        self._bulk_results = []
+
         # Start verification in background
         if self.bulk_thread and self.bulk_thread.isRunning():
              self.bulk_thread.stop()
@@ -281,18 +283,43 @@ class EmailValidatorApp(QtWidgets.QWidget):
 
         self.bulk_thread = BulkVerificationThread(emails)
         self.bulk_thread.result_signal.connect(self.update_results)
-        self.bulk_thread.all_done.connect(self.show_completion_popup)
+        self.bulk_thread.all_done.connect(self.on_bulk_all_done)
         self.bulk_thread.start()
 
-    def show_completion_popup(self):
-        QtWidgets.QMessageBox.information(
+    def on_bulk_all_done(self):
+        reply = QtWidgets.QMessageBox.question(
             self,
             "Process Complete",
-            "All emails from the file have been checked!",
-            QtWidgets.QMessageBox.Ok
+            "All emails from the file have been checked!\n\nWould you like to export the results to CSV?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.export_bulk_results_csv()
+
+    def export_bulk_results_csv(self):
+        if not self._bulk_results:
+            return
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Verification Results",
+            "email_verification_results.csv",
+            "CSV File (*.csv)"
         )
 
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Email", "Status"])
+                writer.writerows(self._bulk_results)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Export Error", f"Failed to save CSV: {str(e)}")
+
     def update_results(self, email, status):
+        self._bulk_results.append((email, status))
         self.results_dialog.add_row(email, status)
 
     def apply_styles(self):
