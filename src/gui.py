@@ -11,6 +11,15 @@ class ResultDialog(QtWidgets.QDialog):
         self.setWindowTitle("KnowEmail - Verifying Bulk Emails")
         self.setMinimumSize(600, 400)
         self.layout = QtWidgets.QVBoxLayout()
+
+        # Status bar: elapsed time + progress count
+        self.status_label = QtWidgets.QLabel("⏱ 0:00:00  |  0 / 0 verified")
+        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
+        font = self.status_label.font()
+        font.setBold(True)
+        self.status_label.setFont(font)
+        self.layout.addWidget(self.status_label)
+
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["Email", "Status"])
@@ -41,6 +50,9 @@ class ResultDialog(QtWidgets.QDialog):
         
         self.table.setItem(row_position, 0, email_item)
         self.table.setItem(row_position, 1, status_item)
+
+    def update_status(self, elapsed_str, done, total):
+        self.status_label.setText(f"⏱ {elapsed_str}  |  {done} / {total} verified")
     
     def showEvent(self, event):
         """Override showEvent to ensure the help button is available."""
@@ -138,7 +150,8 @@ class BulkVerificationThread(QtCore.QThread):
                 
                 self.result_signal.emit(email, status)
                 
-        self.all_done.emit()
+        if self.is_running:
+            self.all_done.emit()
 
     def verify_single_email(self, email):
         try:
@@ -169,6 +182,13 @@ class EmailValidatorApp(QtWidgets.QWidget):
         self.verifying_timer.timeout.connect(self.update_verifying_text)
         self.bulk_thread = None
         self.single_worker_thread = None
+
+        # Stopwatch for bulk verification
+        self._elapsed_timer = QtCore.QTimer()
+        self._elapsed_timer.timeout.connect(self._update_elapsed_time)
+        self._elapsed_seconds = 0
+        self._total_emails = 0
+        self._verified_count = 0
 
     def init_ui(self):
         self.setWindowTitle("KnowEmail")
@@ -272,7 +292,14 @@ class EmailValidatorApp(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to read file: {str(e)}")
             return
             
+        if hasattr(self, 'results_dialog'):
+            try:
+                self.results_dialog.finished.disconnect(self._elapsed_timer.stop)
+            except TypeError:
+                pass  # already disconnected
+
         self.results_dialog = ResultDialog(self)
+        self.results_dialog.finished.connect(self._elapsed_timer.stop)
         self.results_dialog.show()
         self._bulk_results = []
 
@@ -281,16 +308,28 @@ class EmailValidatorApp(QtWidgets.QWidget):
              self.bulk_thread.stop()
              self.bulk_thread.wait()
 
+        self._total_emails = len(emails)
+        self._verified_count = 0
+        self._elapsed_seconds = 0
+        self._elapsed_timer.start(1000)
+
         self.bulk_thread = BulkVerificationThread(emails)
         self.bulk_thread.result_signal.connect(self.update_results)
         self.bulk_thread.all_done.connect(self.on_bulk_all_done)
         self.bulk_thread.start()
 
     def on_bulk_all_done(self):
+        self._elapsed_timer.stop()
+        h = self._elapsed_seconds // 3600
+        m = (self._elapsed_seconds % 3600) // 60
+        s = self._elapsed_seconds % 60
+        elapsed_str = f"{h}:{m:02d}:{s:02d}"
         reply = QtWidgets.QMessageBox.question(
             self,
             "Process Complete",
-            "All emails from the file have been checked!\n\nWould you like to export the results to CSV?",
+            f"All {self._total_emails} emails have been checked!\n"
+            f"⏱ Total time: {elapsed_str}\n\n"
+            f"Would you like to export the results to CSV?",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
         )
         if reply == QtWidgets.QMessageBox.Yes:
@@ -321,6 +360,20 @@ class EmailValidatorApp(QtWidgets.QWidget):
     def update_results(self, email, status):
         self._bulk_results.append((email, status))
         self.results_dialog.add_row(email, status)
+        self._verified_count += 1
+        self._refresh_status_label()
+
+    def _update_elapsed_time(self):
+        self._elapsed_seconds += 1
+        self._refresh_status_label()
+
+    def _refresh_status_label(self):
+        h = self._elapsed_seconds // 3600
+        m = (self._elapsed_seconds % 3600) // 60
+        s = self._elapsed_seconds % 60
+        elapsed_str = f"{h}:{m:02d}:{s:02d}"
+        if getattr(self, 'results_dialog', None) and self.results_dialog.isVisible():
+            self.results_dialog.update_status(elapsed_str, self._verified_count, self._total_emails)
 
     def apply_styles(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
