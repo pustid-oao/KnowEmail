@@ -1,9 +1,43 @@
 import os
 import csv
+import json
+import datetime
+import threading
 import webbrowser
 from PyQt5 import QtWidgets, QtCore, QtGui
 from lib.validators import is_valid_email_syntax, has_mx_record, verify_email_smtp
 import pandas as pd
+
+# Path to the pause/resume cache file (stored next to main.py at project root)
+_CACHE_FILE = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'knowemail_pause_cache.json')
+)
+
+
+_CACHE_MAX_AGE_DAYS = 7  # Discard pause caches older than this many days
+
+
+def _load_cache_safe(cache_file):
+    """Load the pause cache JSON file; return None on any error."""
+    try:
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _is_cache_stale(cache: dict) -> bool:
+    """Return True if the cache's created_at timestamp is older than _CACHE_MAX_AGE_DAYS."""
+    created_at_str = cache.get("created_at")
+    if not created_at_str:
+        return False  # old cache without timestamp — treat as fresh to avoid breaking existing sessions
+    try:
+        created_at = datetime.datetime.fromisoformat(created_at_str)
+        age = datetime.datetime.utcnow() - created_at
+        return age.days >= _CACHE_MAX_AGE_DAYS
+    except (ValueError, TypeError):
+        return False
+
 
 class ResultDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
@@ -26,13 +60,17 @@ class ResultDialog(QtWidgets.QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         
         self.layout.addWidget(self.table)
+
+        # Pause / Resume button
+        self.pause_resume_button = QtWidgets.QPushButton("⏸ Pause")
+        self.pause_resume_button.setObjectName("pauseResumeButton")
+        self.layout.addWidget(self.pause_resume_button)
+
         self.setLayout(self.layout)
 
-
-    # Enable the "?" help button
+        # Enable the "?" help button
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowContextHelpButtonHint)
 
-        
 
     def add_row(self, email, status):
         row_position = self.table.rowCount()
@@ -53,6 +91,13 @@ class ResultDialog(QtWidgets.QDialog):
 
     def update_status(self, elapsed_str, done, total):
         self.status_label.setText(f"⏱ {elapsed_str}  |  {done} / {total} verified")
+
+    def set_paused_state(self, paused: bool):
+        """Update the button label to reflect paused/running state."""
+        if paused:
+            self.pause_resume_button.setText("▶ Resume")
+        else:
+            self.pause_resume_button.setText("⏸ Pause")
     
     def showEvent(self, event):
         """Override showEvent to ensure the help button is available."""
@@ -127,27 +172,80 @@ class SingleVerificationWorker(QtCore.QObject):
 class BulkVerificationThread(QtCore.QThread):
     result_signal = QtCore.pyqtSignal(str, str)
     all_done = QtCore.pyqtSignal()
+    # Emitted when the thread pauses; carries the list of emails not yet submitted
+    paused_signal = QtCore.pyqtSignal(list)
     
     def __init__(self, emails):
         super().__init__()
-        self.emails = emails
+        self.emails = list(emails)
         self.is_running = True
+        self._pause_event = threading.Event()
         
     def run(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
-            future_to_email = {executor.submit(self.verify_single_email, email): email for email in self.emails if email}
-            
-            for future in concurrent.futures.as_completed(future_to_email):
+            futures = {}
+
+            # Submit emails one-by-one so we can detect a pause request between submissions
+            for idx, email in enumerate(self.emails):
+                if not email:
+                    continue
+
+                # Check for stop
                 if not self.is_running:
                     executor.shutdown(wait=False, cancel_futures=True)
-                    break
-                    
-                email = future_to_email[future]
+                    return
+
+                # Check for pause — wait for in-flight futures, then signal remaining emails
+                if self._pause_event.is_set():
+                    # Wait for already-submitted futures to complete
+                    for future, em in list(futures.items()):
+                        try:
+                            status = future.result()
+                        except Exception as e:
+                            status = f"Error: {str(e)}"
+                        self.result_signal.emit(em, status)
+                    futures.clear()
+
+                    # Remaining emails are those not yet submitted
+                    remaining = [e for e in self.emails[idx:] if e]
+                    self.paused_signal.emit(remaining)
+                    return
+
+                future = executor.submit(self.verify_single_email, email)
+                futures[future] = email
+
+            # All emails submitted — collect remaining results one at a time
+            # (do NOT wrap in list() — that would block until all are done and
+            #  prevent the pause check from ever triggering mid-collection)
+            pending_futures = set(futures.keys())
+            for future in concurrent.futures.as_completed(futures):
+                if not self.is_running:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+
+                pending_futures.discard(future)
+
+                # Check for pause during final result collection
+                if self._pause_event.is_set():
+                    # Emit the result for this just-completed future
+                    em = futures[future]
+                    try:
+                        status = future.result()
+                    except Exception as e:
+                        status = f"Error: {str(e)}"
+                    self.result_signal.emit(em, status)
+
+                    # Any futures still pending haven't completed yet — re-verify on resume
+                    still_remaining = [futures[f] for f in pending_futures]
+                    self.paused_signal.emit(still_remaining)
+                    return
+
+                email = futures[future]
                 try:
                     status = future.result()
                 except Exception as e:
                     status = f"Error: {str(e)}"
-                
+
                 self.result_signal.emit(email, status)
                 
         if self.is_running:
@@ -172,6 +270,10 @@ class BulkVerificationThread(QtCore.QThread):
     def stop(self):
         self.is_running = False
 
+    def pause(self):
+        """Request the thread to pause after the current in-flight batch finishes."""
+        self._pause_event.set()
+
 class EmailValidatorApp(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -189,6 +291,10 @@ class EmailValidatorApp(QtWidgets.QWidget):
         self._elapsed_seconds = 0
         self._total_emails = 0
         self._verified_count = 0
+
+        # Pause/resume state
+        self._is_paused = False
+        self._cache_file = os.path.normpath(_CACHE_FILE)
 
     def init_ui(self):
         self.setWindowTitle("KnowEmail")
@@ -267,7 +373,122 @@ class EmailValidatorApp(QtWidgets.QWidget):
 
         self.setLayout(main_layout)
 
+    # ------------------------------------------------------------------
+    # Pause / Resume helpers
+    # ------------------------------------------------------------------
+
+    def _save_pause_cache(self, remaining_emails):
+        """Write the pause cache file with remaining emails and verified results so far."""
+        data = {
+            "remaining_emails": remaining_emails,
+            "verified_results": self._bulk_results,
+            "elapsed_seconds": self._elapsed_seconds,
+            "total_emails": self._total_emails,
+            "created_at": datetime.datetime.utcnow().isoformat(),
+        }
+        try:
+            with open(self._cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                self, "Cache Error", f"Could not save pause cache:\n{str(e)}"
+            )
+
+    def _delete_pause_cache(self):
+        """Remove the pause cache file if it exists."""
+        try:
+            if os.path.exists(self._cache_file):
+                os.remove(self._cache_file)
+        except Exception:
+            pass
+
+    def _on_thread_paused(self, remaining_emails):
+        """Slot called when BulkVerificationThread emits paused_signal."""
+        self._elapsed_timer.stop()
+        self._save_pause_cache(remaining_emails)
+        self._is_paused = True
+        if getattr(self, 'results_dialog', None) and self.results_dialog.isVisible():
+            self.results_dialog.set_paused_state(True)
+
+    def _toggle_pause_resume(self):
+        """Called when the Pause/Resume button in ResultDialog is clicked."""
+        if self._is_paused:
+            self._resume_bulk()
+        else:
+            self._pause_bulk()
+
+    def _pause_bulk(self):
+        """Request the running bulk thread to pause."""
+        if self.bulk_thread and self.bulk_thread.isRunning():
+            self.bulk_thread.pause()
+            # UI update happens in _on_thread_paused once the thread actually pauses
+
+    def _resume_bulk(self):
+        """Resume a paused bulk verification from the cache file."""
+        cache = _load_cache_safe(self._cache_file)
+        if not cache:
+            QtWidgets.QMessageBox.warning(self, "Resume Error", "No pause cache found.")
+            return
+
+        remaining = cache.get("remaining_emails", [])
+        if not remaining:
+            # Nothing left to verify — treat as done
+            self._is_paused = False
+            if getattr(self, 'results_dialog', None):
+                self.results_dialog.set_paused_state(False)
+            self.on_bulk_all_done()
+            return
+
+        # Restore state (including verified results so a subsequent pause saves them correctly)
+        self._bulk_results = list(cache.get("verified_results", []))
+        # Clear the table before repopulating to avoid duplicate rows if the same
+        # dialog instance is still open from before the pause.
+        self.results_dialog.table.setRowCount(0)
+        for email, status in self._bulk_results:
+            self.results_dialog.add_row(email, status)
+        self._verified_count = len(self._bulk_results)
+        self._elapsed_seconds = cache.get("elapsed_seconds", self._elapsed_seconds)
+        self._total_emails = cache.get("total_emails", self._total_emails)
+        self._is_paused = False
+
+        if getattr(self, 'results_dialog', None) and self.results_dialog.isVisible():
+            self.results_dialog.set_paused_state(False)
+
+        # Start a new thread for the remaining emails
+        self.bulk_thread = BulkVerificationThread(remaining)
+        self.bulk_thread.result_signal.connect(self.update_results)
+        self.bulk_thread.all_done.connect(self.on_bulk_all_done)
+        self.bulk_thread.paused_signal.connect(self._on_thread_paused)
+        self.bulk_thread.start()
+
+        self._elapsed_timer.start(1000)
+
+    # ------------------------------------------------------------------
+    # Bulk verification
+    # ------------------------------------------------------------------
+
     def bulk_verify(self):
+        # If a pause cache exists, offer to resume it (unless it is stale)
+        if os.path.exists(self._cache_file):
+            cache = _load_cache_safe(self._cache_file)
+            if cache and _is_cache_stale(cache):
+                # Cache is too old — silently discard it and start fresh
+                self._delete_pause_cache()
+            elif cache:
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Resume Paused Session?",
+                    "A paused verification session was found.\n\n"
+                    "Would you like to resume it, or start a fresh verification?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.Yes,
+                )
+                if reply == QtWidgets.QMessageBox.Yes:
+                    self._restore_and_resume()
+                    return
+                else:
+                    self._delete_pause_cache()
+
         file_dialog = QtWidgets.QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(
             self,
@@ -281,7 +502,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
             
         try:
             if file_path.endswith('.txt'):
-                with open(file_path, 'r') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     emails = [line.strip() for line in f.readlines() if line.strip()]
             elif file_path.endswith('.xlsx'):
                 df = pd.read_excel(file_path)
@@ -292,34 +513,95 @@ class EmailValidatorApp(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to read file: {str(e)}")
             return
             
+        self._start_bulk_session(emails)
+
+    def _restore_and_resume(self):
+        """Restore a paused session from cache and open the ResultDialog."""
+        cache = _load_cache_safe(self._cache_file)
+        if not cache:
+            QtWidgets.QMessageBox.warning(self, "Resume Error", "Could not read the pause cache.")
+            return
+
+        verified_results = cache.get("verified_results", [])
+        remaining = cache.get("remaining_emails", [])
+        elapsed = cache.get("elapsed_seconds", 0)
+        total = cache.get("total_emails", len(verified_results) + len(remaining))
+
+        # Disconnect old dialog if present
         if hasattr(self, 'results_dialog'):
             try:
                 self.results_dialog.finished.disconnect(self._elapsed_timer.stop)
             except TypeError:
-                pass  # already disconnected
+                pass
 
         self.results_dialog = ResultDialog(self)
         self.results_dialog.finished.connect(self._elapsed_timer.stop)
+        self.results_dialog.pause_resume_button.clicked.connect(self._toggle_pause_resume)
+        self.results_dialog.show()
+
+        # Restore already-verified results into the dialog
+        self._bulk_results = []
+        for email, status in verified_results:
+            self._bulk_results.append((email, status))
+            self.results_dialog.add_row(email, status)
+
+        self._total_emails = total
+        self._verified_count = len(verified_results)
+        self._elapsed_seconds = elapsed
+        self._is_paused = False
+
+        if not remaining:
+            self.on_bulk_all_done()
+            return
+
+        self._elapsed_timer.start(1000)
+
+        self.bulk_thread = BulkVerificationThread(remaining)
+        self.bulk_thread.result_signal.connect(self.update_results)
+        self.bulk_thread.all_done.connect(self.on_bulk_all_done)
+        self.bulk_thread.paused_signal.connect(self._on_thread_paused)
+        self.bulk_thread.start()
+
+    def _start_bulk_session(self, emails):
+        """Start a fresh bulk verification session with the given email list."""
+        if hasattr(self, 'results_dialog'):
+            try:
+                self.results_dialog.finished.disconnect(self._elapsed_timer.stop)
+            except TypeError:
+                pass
+
+        self.results_dialog = ResultDialog(self)
+        self.results_dialog.finished.connect(self._elapsed_timer.stop)
+        self.results_dialog.pause_resume_button.clicked.connect(self._toggle_pause_resume)
         self.results_dialog.show()
         self._bulk_results = []
 
-        # Start verification in background
+        # Stop any running thread
         if self.bulk_thread and self.bulk_thread.isRunning():
-             self.bulk_thread.stop()
-             self.bulk_thread.wait()
+            self.bulk_thread.stop()
+            self.bulk_thread.wait()
 
         self._total_emails = len(emails)
         self._verified_count = 0
         self._elapsed_seconds = 0
+        self._is_paused = False
         self._elapsed_timer.start(1000)
 
         self.bulk_thread = BulkVerificationThread(emails)
         self.bulk_thread.result_signal.connect(self.update_results)
         self.bulk_thread.all_done.connect(self.on_bulk_all_done)
+        self.bulk_thread.paused_signal.connect(self._on_thread_paused)
         self.bulk_thread.start()
 
     def on_bulk_all_done(self):
         self._elapsed_timer.stop()
+        # Clean up the pause cache on successful completion
+        self._delete_pause_cache()
+        self._is_paused = False
+        if getattr(self, 'results_dialog', None) and self.results_dialog.isVisible():
+            self.results_dialog.set_paused_state(False)
+            self.results_dialog.pause_resume_button.setEnabled(False)
+
         h = self._elapsed_seconds // 3600
         m = (self._elapsed_seconds % 3600) // 60
         s = self._elapsed_seconds % 60
@@ -442,3 +724,5 @@ class EmailValidatorApp(QtWidgets.QWidget):
                 msg.setStyleSheet(f.read())
         
         msg.exec_()
+
+

@@ -35,33 +35,48 @@ def verify_email_smtp(email):
         return False
 
     smtp_ports = [587, 465, 25]
-    timeout = 3
+    timeout = 5
 
     def check_smtp(mx_record, port):
+        mx_host = mx_record.exchange.to_text().rstrip('.')
         try:
-            with smtplib.SMTP(mx_record.exchange.to_text(), port, timeout=timeout) as server:
+            if port == 465:
+                server = smtplib.SMTP_SSL(mx_host, port, timeout=timeout)
+            else:
+                server = smtplib.SMTP(mx_host, port, timeout=timeout)
+
+            with server:
                 server.set_debuglevel(0)
-                server.helo()
-                server.mail('')
+                if port == 587:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                else:
+                    server.ehlo()
+                server.mail('probe@example.com')
                 code, message = server.rcpt(email)
-                if code == 250:
+                # 250 = OK, 251 = forwarded — both mean the address is valid.
+                # Yahoo and many providers return 250 on port 25 when the
+                # address exists; treat any 2xx as success.
+                if 200 <= code < 300:
                     return True
-        except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, 
-                smtplib.SMTPException, socket.timeout):
+                return False
+        except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected,
+                smtplib.SMTPException, socket.timeout,
+                OSError):  # OSError covers ssl.SSLError (TLS failures) and network errors
             return False
 
-    def check_record(mx_record):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(check_smtp, mx_record, port) for port in smtp_ports]
-            for future in concurrent.futures.as_completed(futures):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(check_smtp, mx_record, port): (mx_record, port)
+            for mx_record in mx_records
+            for port in smtp_ports
+        }
+        for future in concurrent.futures.as_completed(futures):
+            try:
                 if future.result():
                     return True
-        return False
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = [executor.submit(check_record, mx_record) for mx_record in mx_records]
-        for future in concurrent.futures.as_completed(futures):
-            if future.result():
-                return True
+            except Exception:
+                continue  # treat unexpected errors as non-confirmations
 
     return False
