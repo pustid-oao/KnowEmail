@@ -122,7 +122,7 @@ class BulkVerificationThread(QtCore.QThread):
         self.is_running = True
         
     def run(self):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
             future_to_email = {executor.submit(self.verify_single_email, email): email for email in self.emails if email}
             
             for future in concurrent.futures.as_completed(future_to_email):
