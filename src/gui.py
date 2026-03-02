@@ -38,7 +38,15 @@ class ResultDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Verifying Bulk Emails...")
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(720, 480)
+        
+        # Set window flags: add maximize/minimize, remove help button
+        self.setWindowFlags(
+            QtCore.Qt.Window |
+            QtCore.Qt.WindowMinimizeButtonHint |
+            QtCore.Qt.WindowMaximizeButtonHint
+        )
+        
         self.layout = QtWidgets.QVBoxLayout()
 
         # Status bar: elapsed time + progress count
@@ -46,6 +54,7 @@ class ResultDialog(QtWidgets.QDialog):
         self.status_label.setAlignment(QtCore.Qt.AlignCenter)
         font = self.status_label.font()
         font.setBold(True)
+        font.setPointSize(15)  # Increased by 10%
         self.status_label.setFont(font)
         self.layout.addWidget(self.status_label)
 
@@ -54,16 +63,10 @@ class ResultDialog(QtWidgets.QDialog):
         self.table.setHorizontalHeaderLabels(["Email", "Status", "SMTP Message"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(0, 250)  # Make email column wider
+        self.table.setColumnWidth(0, 300)  # Make email column wider
         
         self.layout.addWidget(self.table)
         self.setLayout(self.layout)
-
-
-    # Enable the "?" help button
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowContextHelpButtonHint)
-
-        
 
     def add_row(self, email, status, smtp_message=""):
         row_position = self.table.rowCount()
@@ -86,53 +89,7 @@ class ResultDialog(QtWidgets.QDialog):
 
     def update_status(self, elapsed_str, done, total):
         self.status_label.setText(f"⏱ {elapsed_str}  |  {done} / {total} verified")
-    
-    def showEvent(self, event):
-        """Override showEvent to ensure the help button is available."""
-        super().showEvent(event)
-        
-        # Find the help button after the dialog is shown
-        help_button = self.findChild(QtWidgets.QAbstractButton, "qt_help_button")
-        if help_button:
-            help_button.clicked.connect(self.show_status_help)
 
-    def show_status_help(self):
-        help_text = """
-        <b>Verification Status Explanations:</b><br><br>
-        
-        <span style='color:#27ae60; font-weight:bold'>Valid</span>: 
-        - Email address is valid and reachable<br>
-        - Domain has proper MX records<br>
-        - SMTP server confirmed the mailbox exists<br><br>
-        
-        <span style='color:#e74c3c; font-weight:bold'>Invalid (Syntax)</span>: 
-        - Email format is incorrect<br>
-        - Missing @ symbol or invalid domain structure<br>
-        - Example: <i>user@domain</i> (missing .com)<br><br>
-        
-        <span style='color:#e74c3c; font-weight:bold'>Invalid (No MX)</span>: 
-        - Domain does not have mail exchange records<br>
-        - Domain might not exist or is not configured for email<br>
-        - Example: <i>user@nonexistentdomain.xyz</i><br><br>
-        
-        <span style='color:#e74c3c; font-weight:bold'>Invalid (SMTP)</span>: 
-        - Domain exists, but the mailbox does not<br>
-        - SMTP server rejected the recipient address<br>
-        - Example: <i>nonexistentuser@gmail.com</i><br><br>
-        
-        <span style='color:#f1c40f; font-weight:bold'>Error</span>: 
-        - Temporary network issues<br>
-        - SMTP server timeout or connection error<br>
-        - Unexpected verification errors<br><br>
-        
-        <i>Note: Some email servers may block verification attempts for privacy reasons.</i>
-        """
-        help_dialog = QtWidgets.QMessageBox(self)
-        help_dialog.setWindowTitle("Verification Status Help")
-        help_dialog.setTextFormat(QtCore.Qt.RichText)  # Enable HTML formatting
-        help_dialog.setText(help_text)
-        help_dialog.setStandardButtons(QtWidgets.QMessageBox.Ok)
-        help_dialog.exec_()
 
 class SingleVerificationWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(str, bool, str)
@@ -209,6 +166,10 @@ class BulkVerificationThread(QtCore.QThread):
 class EmailValidatorApp(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
+        
+        # Load custom fonts
+        self.load_custom_fonts()
+        
         self.init_ui()
         self.apply_styles()
         self.verifying_timer = QtCore.QTimer()
@@ -224,9 +185,35 @@ class EmailValidatorApp(QtWidgets.QWidget):
         self._total_emails = 0
         self._verified_count = 0
 
+    def load_custom_fonts(self):
+        """Load custom font from src/fonts directory."""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        fonts_dir = os.path.join(current_dir, 'fonts')
+        
+        # Font file - use FiraCode-Regular.ttf
+        font_path = os.path.join(fonts_dir, 'FiraCode-Regular.ttf')
+        
+        font_database = QtGui.QFontDatabase()
+        
+        if os.path.exists(font_path):
+            font_id = font_database.addApplicationFont(font_path)
+            if font_id != -1:
+                families = font_database.applicationFontFamilies(font_id)
+                if families:
+                    self._custom_font_family = families[0]
+            else:
+                self._custom_font_family = 'Consolas'
+        else:
+            self._custom_font_family = 'Consolas'
+        
+        # Set default font for the application
+        default_font = QtGui.QFont(self._custom_font_family)
+        default_font.setPointSize(11)  # Increased by 10%
+        QtWidgets.QApplication.setFont(default_font)
+
     def init_ui(self):
         self.setWindowTitle("KnowEmail")
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(720, 360)
         
         # Set window icon
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -235,8 +222,8 @@ class EmailValidatorApp(QtWidgets.QWidget):
 
         # Main layout
         main_layout = QtWidgets.QVBoxLayout()
-        main_layout.setContentsMargins(40, 30, 40, 30)
-        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(48, 36, 48, 36)
+        main_layout.setSpacing(18)
 
         # Header Section
         header_layout = QtWidgets.QVBoxLayout()
@@ -257,6 +244,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
         )
         description.setWordWrap(True)
         description.setObjectName("description")
+        description.setAlignment(QtCore.Qt.AlignHCenter)
         main_layout.addWidget(description)
 
         # Input Section
@@ -273,36 +261,11 @@ class EmailValidatorApp(QtWidgets.QWidget):
         input_layout.addWidget(self.validate_button)
         main_layout.addLayout(input_layout)
 
-        # Result Label
-        self.result_label = QtWidgets.QLabel("")
-        self.result_label.setObjectName("resultLabel")
-        main_layout.addWidget(self.result_label)
-
         # Bulk Verify Button
         self.bulk_button = QtWidgets.QPushButton("Check Multiple Emails")
         self.bulk_button.setObjectName("bulkButton")
         self.bulk_button.clicked.connect(self.bulk_verify)
         main_layout.addWidget(self.bulk_button)
-
-        # Support Section
-        support_layout = QtWidgets.QVBoxLayout()
-        support_label = QtWidgets.QLabel(
-            "We've made this tool free and open-source for everyone."
-            "If you'd like to support our development efforts, consider donating."
-        )
-        support_label.setWordWrap(True)
-        support_label.setObjectName("supportLabel")
-        
-        donate_button = QtWidgets.QPushButton("Support Us")
-        donate_button.setObjectName("donateButton")
-        donate_button.clicked.connect(lambda: webbrowser.open("https://example.com/donate"))
-        
-        support_layout.addWidget(support_label, 0, QtCore.Qt.AlignHCenter)
-        support_layout.addWidget(donate_button, 0, QtCore.Qt.AlignHCenter)
-        main_layout.addLayout(support_layout)
-
-        # Add spacer to push support section to bottom
-        main_layout.addStretch(1)
 
         self.setLayout(main_layout)
 
@@ -312,7 +275,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
             self,
             "Select Email List",
             "",
-            "Text File (*.txt);; Excel File (*.xlsx)"
+            "Text File (*.txt)"
         )
         
         if not file_path:
@@ -427,10 +390,20 @@ class EmailValidatorApp(QtWidgets.QWidget):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         style_path = os.path.join(current_dir, 'styles.qss')
         with open(style_path, 'r') as f:
-            self.setStyleSheet(f.read())
+            style_content = f.read()
+        
+        # Replace font-family in stylesheet with custom font
+        custom_font = getattr(self, '_custom_font_family', 'Consolas')
+        style_content = style_content.replace(
+            "font-family: 'Segoe UI', Arial, sans-serif;",
+            f"font-family: '{custom_font}', Consolas, monospace;"
+        )
+        
+        self.setStyleSheet(style_content)
 
     def update_verifying_text(self):
-        self.result_label.setText(f"Verifying{'.' * self.verifying_counter}")
+        dots = '.' * self.verifying_counter
+        self.validate_button.setText(f"Verifying{dots}")
         self.verifying_counter = (self.verifying_counter % 3) + 1
 
     def validate_email(self):
@@ -444,7 +417,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
             
         self.verifying_counter = 1
         self.verifying_timer.start(500)
-        self.result_label.setText("Verifying...")
+        self.validate_button.setText("Verifying...")
         self.validate_button.setEnabled(False)
         self.email_input.setEnabled(False)
 
@@ -465,6 +438,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
     def handle_single_verification_result(self, message, is_valid, smtp_message):
         self.verifying_timer.stop()
         self.result_label.setText("")
+        self.validate_button.setText("Check")
         self.validate_button.setEnabled(True)
         self.email_input.setEnabled(True)
         
@@ -480,6 +454,7 @@ class EmailValidatorApp(QtWidgets.QWidget):
     def show_popup(self, message):
         self.verifying_timer.stop()
         self.result_label.setText("")
+        self.validate_button.setText("Check")
     
         msg = QtWidgets.QMessageBox(self)
         msg.setIcon(QtWidgets.QMessageBox.Information)
