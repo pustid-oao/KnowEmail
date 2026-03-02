@@ -81,6 +81,9 @@ def verify_email_smtp(email):
             elif code == 452:
                 # 452 - Mailbox temporarily unavailable (e.g., over quota)
                 return False, f"{code}-{message.decode() if message else 'Quota exceeded'}"
+            elif code == 552:
+                # 552 - Mailbox quota exceeded (storage allocation exceeded)
+                return False, f"{code}-{message.decode() if message else 'Mailbox storage quota exceeded'}"
             elif code == 550 or "550" in (message.decode() if message else ''):
                 return False, f"{code}-{message.decode() if message else 'Unknown error'}"
             else:
@@ -96,9 +99,9 @@ def verify_email_smtp(email):
             result, msg = check_smtp(mx_host, port)
             if result:
                 return True, msg
-            # If we got a 550 or 452 response, that means the server responded 
+            # If we got a 550, 452 or 552 response, that means the server responded 
             # with a definitive answer (mailbox doesn't exist or is unavailable)
-            if "550" in msg or "452" in msg:
+            if "550" in msg or "452" in msg or "552" in msg:
                 return False, msg
             # Continue to next port/server
         

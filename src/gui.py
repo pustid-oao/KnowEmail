@@ -14,12 +14,15 @@ def clean_smtp_message(message):
         return message
     # Handle escaped newlines (\n as two characters) first
     cleaned = message.replace('\\n5.1.1', ' ')
+    cleaned = message.replace('\\n5.2.1', ' ')
     cleaned = cleaned.replace('\\n4.2.2', ' ')
-    # Remove specific SMTP status code patterns for cleaner display
-    # Handle 5.1.1 (mailbox does not exist)
+    cleaned = cleaned.replace('\\n4.2.0', ' ')
+    # Handle 5.1.1, 5.2.1 (mailbox does not exist)
     cleaned = cleaned.replace('\n5.1.1', ' ')
-    # Handle 4.2.2 (mailbox over quota / out of storage)
+    cleaned = cleaned.replace('\n5.2.1', ' ')
+    # Handle 4.2.0, 4.2.2 (mailbox over quota / out of storage)
     cleaned = cleaned.replace('\n4.2.2', ' ')
+    cleaned = cleaned.replace('\n4.2.0', ' ')
     # Remove newlines followed by status code pattern (e.g., \n5.1.1, \n4.2.0)
     cleaned = re.sub(r'\n\d+\.\d+\.\d+\s*', ' ', cleaned)
     # Also remove status code at the beginning of the message
