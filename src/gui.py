@@ -1,232 +1,86 @@
 import os
 import csv
-import time
-import threading
 import webbrowser
 import concurrent.futures
+import re
 from PyQt5 import QtWidgets, QtCore, QtGui
 from lib.validators import is_valid_email_syntax, has_mx_record, verify_email_smtp
 import pandas as pd
 
-class ResultDialog(QtWidgets.QDialog):
-    def __init__(self, total_emails=0, parent=None):
-        super().__init__(parent)
-        self._total = total_emails
-        self._processed = 0
-        self._pause_callback = None
-        self._update_window_title()
-        self.setMinimumSize(700, 500)
-        self._start_time = time.time()
-        self._elapsed_timer = QtCore.QTimer(self)
-        self._elapsed_timer.timeout.connect(self._update_elapsed)
-        self._elapsed_timer.start(500)
 
+def clean_smtp_message(message):
+    """Clean SMTP message by removing enhanced status code prefixes like \n5.1.1"""
+    if not message:
+        return message
+    # Remove newlines followed by status code pattern (e.g., \n5.1.1, \n4.2.0)
+    cleaned = re.sub(r'\n\d+\.\d+\.\d+\s*', ' ', message)
+    # Also remove status code at the beginning of the message
+    cleaned = re.sub(r'^\d+\.\d+\.\d+\s*', '', cleaned)
+    # Replace remaining newlines with spaces
+    cleaned = cleaned.replace('\\n', ' ')
+    cleaned = cleaned.replace('\n', ' ')
+    # Normalize whitespace
+    cleaned = ' '.join(cleaned.split())
+    return cleaned
+
+class ResultDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Verifying Bulk Emails...")
+        self.setMinimumSize(600, 400)
         self.layout = QtWidgets.QVBoxLayout()
 
-        # --- Stats bar (line count + elapsed time) ---
-        stats_layout = QtWidgets.QHBoxLayout()
+        # Status bar: elapsed time + progress count
+        self.status_label = QtWidgets.QLabel("⏱ 0:00:00  |  0 / 0 verified")
+        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
+        font = self.status_label.font()
+        font.setBold(True)
+        self.status_label.setFont(font)
+        self.layout.addWidget(self.status_label)
 
-        self._count_label = QtWidgets.QLabel(f"Processed: 0 / {self._total}")
-        self._count_label.setObjectName("statsLabel")
-
-        self._elapsed_label = QtWidgets.QLabel("Elapsed: 0s")
-        self._elapsed_label.setObjectName("statsLabel")
-
-        stats_layout.addWidget(self._count_label)
-        stats_layout.addStretch(1)
-        stats_layout.addWidget(self._elapsed_label)
-        self.layout.addLayout(stats_layout)
-
-        # --- Results table ---
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Email", "Status"])
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Email", "Status", "SMTP Message"])
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, 250)  # Make email column wider
+        
         self.layout.addWidget(self.table)
-
-        # --- Action buttons: row 1 (Pause/Resume + Copy) ---
-        btn_row1 = QtWidgets.QHBoxLayout()
-
-        self._pause_btn = QtWidgets.QPushButton("Pause")
-        self._pause_btn.setObjectName("pauseButton")
-        self._pause_btn.setCheckable(True)
-        self._pause_btn.clicked.connect(self._on_pause_toggle)
-
-        self._copy_btn = QtWidgets.QPushButton("Copy to Clipboard")
-        self._copy_btn.setObjectName("actionButton")
-        self._copy_btn.clicked.connect(self.copy_to_clipboard)
-
-        btn_row1.addWidget(self._pause_btn)
-        btn_row1.addWidget(self._copy_btn)
-        self.layout.addLayout(btn_row1)
-
-        # --- Action buttons: row 2 (Export CSV + Export TXT) ---
-        btn_row2 = QtWidgets.QHBoxLayout()
-
-        self._export_csv_btn = QtWidgets.QPushButton("Export as CSV")
-        self._export_csv_btn.setObjectName("actionButton")
-        self._export_csv_btn.clicked.connect(lambda: self.export_results("csv"))
-
-        self._export_txt_btn = QtWidgets.QPushButton("Export as TXT")
-        self._export_txt_btn.setObjectName("actionButton")
-        self._export_txt_btn.clicked.connect(lambda: self.export_results("txt"))
-
-        btn_row2.addWidget(self._export_csv_btn)
-        btn_row2.addWidget(self._export_txt_btn)
-        self.layout.addLayout(btn_row2)
-
         self.setLayout(self.layout)
 
-        # Enable the "?" help button
+
+    # Enable the "?" help button
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowContextHelpButtonHint)
 
-    # ------------------------------------------------------------------
-    # Window title helper
-    # ------------------------------------------------------------------
-    def _update_window_title(self):
-        self.setWindowTitle(f"Verifying {self._processed} / {self._total} emails...")
+        
 
-    # ------------------------------------------------------------------
-    # Public read-only properties
-    # ------------------------------------------------------------------
-    @property
-    def processed(self):
-        return self._processed
-
-    @property
-    def total(self):
-        return self._total
-
-    # ------------------------------------------------------------------
-    # Timer helpers
-    # ------------------------------------------------------------------
-    def _update_elapsed(self):
-        elapsed = int(time.time() - self._start_time)
-        self._elapsed_label.setText(f"Elapsed: {elapsed}s")
-
-    def stop_timer(self):
-        """Call this when verification is complete."""
-        self._elapsed_timer.stop()
-        elapsed = int(time.time() - self._start_time)
-        self._elapsed_label.setText(f"Elapsed: {elapsed}s (done)")
-        # Disable pause button once done
-        self._pause_btn.setEnabled(False)
-
-    # ------------------------------------------------------------------
-    # Pause / Resume
-    # ------------------------------------------------------------------
-    def _on_pause_toggle(self, checked: bool):
-        self._pause_btn.setText("Resume" if checked else "Pause")
-        # Notify the thread via the callback set by EmailValidatorApp
-        if self._pause_callback:
-            self._pause_callback(checked)
-
-    def set_pause_callback(self, callback):
-        """Register a callable(paused: bool) that the dialog calls on toggle."""
-        self._pause_callback = callback
-
-    # ------------------------------------------------------------------
-    # Row management
-    # ------------------------------------------------------------------
-    def add_row(self, email, status):
+    def add_row(self, email, status, smtp_message=""):
         row_position = self.table.rowCount()
         self.table.insertRow(row_position)
-
+        
         email_item = QtWidgets.QTableWidgetItem(email)
         status_item = QtWidgets.QTableWidgetItem(status)
-
+        smtp_item = QtWidgets.QTableWidgetItem(smtp_message)
+        
         if status == "Valid":
             status_item.setForeground(QtGui.QColor('#27ae60'))  # Green
         elif status.startswith("Invalid"):
             status_item.setForeground(QtGui.QColor('#e74c3c'))  # Red
         else:
             status_item.setForeground(QtGui.QColor('#f1c40f'))  # Yellow
-
+        
         self.table.setItem(row_position, 0, email_item)
         self.table.setItem(row_position, 1, status_item)
+        self.table.setItem(row_position, 2, smtp_item)
 
-        # Update count label and window title
-        self._processed = self.table.rowCount()
-        self._count_label.setText(f"Processed: {self._processed} / {self._total}")
-        self._update_window_title()
-
-    # ------------------------------------------------------------------
-    # Export helpers
-    # ------------------------------------------------------------------
-    def _get_table_data(self):
-        """Return list of (email, status) tuples from the table."""
-        rows = []
-        for r in range(self.table.rowCount()):
-            email = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
-            status = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
-            rows.append((email, status))
-        return rows
-
-    def copy_to_clipboard(self):
-        """Copy all results to the system clipboard as tab-delimited text."""
-        rows = self._get_table_data()
-        if not rows:
-            QtWidgets.QMessageBox.information(self, "Copy", "No results to copy.")
-            return
-
-        lines = ["Email\tStatus"]
-        for email, status in rows:
-            lines.append(f"{email}\t{status}")
-
-        text = "\n".join(lines)
-        QtWidgets.QApplication.clipboard().setText(text)
-        QtWidgets.QMessageBox.information(
-            self, "Copied", f"{len(rows)} result(s) copied to clipboard."
-        )
-
-    def export_results(self, fmt: str):
-        """Export results to a tab-delimited CSV or TXT file."""
-        rows = self._get_table_data()
-        if not rows:
-            QtWidgets.QMessageBox.information(self, "Export", "No results to export.")
-            return
-
-        if fmt == "csv":
-            file_filter = "CSV File (*.csv)"
-            default_ext = ".csv"
-        else:
-            file_filter = "Text File (*.txt)"
-            default_ext = ".txt"
-
-        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Results",
-            f"email_results{default_ext}",
-            file_filter,
-        )
-
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                if fmt == "csv":
-                    writer = csv.writer(f)
-                else:
-                    writer = csv.writer(f, delimiter="\t")
-                writer.writerow(["Email", "Status"])
-                writer.writerows(rows)
-
-            QtWidgets.QMessageBox.information(
-                self, "Export Complete", f"Results saved to:\n{file_path}"
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self, "Export Error", f"Failed to save file:\n{str(e)}"
-            )
-
-    # ------------------------------------------------------------------
-    # Help button
-    # ------------------------------------------------------------------
+    def update_status(self, elapsed_str, done, total):
+        self.status_label.setText(f"⏱ {elapsed_str}  |  {done} / {total} verified")
+    
     def showEvent(self, event):
         """Override showEvent to ensure the help button is available."""
         super().showEvent(event)
-
+        
+        # Find the help button after the dialog is shown
         help_button = self.findChild(QtWidgets.QAbstractButton, "qt_help_button")
         if help_button:
             help_button.clicked.connect(self.show_status_help)
@@ -264,14 +118,13 @@ class ResultDialog(QtWidgets.QDialog):
         """
         help_dialog = QtWidgets.QMessageBox(self)
         help_dialog.setWindowTitle("Verification Status Help")
-        help_dialog.setTextFormat(QtCore.Qt.RichText)
+        help_dialog.setTextFormat(QtCore.Qt.RichText)  # Enable HTML formatting
         help_dialog.setText(help_text)
         help_dialog.setStandardButtons(QtWidgets.QMessageBox.Ok)
         help_dialog.exec_()
 
-
 class SingleVerificationWorker(QtCore.QObject):
-    finished = QtCore.pyqtSignal(str, bool)
+    finished = QtCore.pyqtSignal(str, bool, str)
 
     def __init__(self, email):
         super().__init__()
@@ -279,100 +132,68 @@ class SingleVerificationWorker(QtCore.QObject):
 
     def run(self):
         try:
-            if not is_valid_email_syntax(self.email):
-                self.finished.emit("Invalid email syntax", False)
-                return
-
             domain = self.email.split('@')[1]
             if not has_mx_record(domain):
                 self.finished.emit("Domain does not have MX records", False)
                 return
 
-            if not verify_email_smtp(self.email):
-                self.finished.emit("SMTP verification failed! Email is not valid.", False)
+            is_valid, smtp_message = verify_email_smtp(self.email)
+            if not is_valid:
+                self.finished.emit(f"SMTP verification failed: {smtp_message}", False, smtp_message)
             else:
-                self.finished.emit("Email is valid and appears to be reachable", True)
+                self.finished.emit(f"Email is valid and appears to be reachable: {smtp_message}", True, smtp_message)
         except Exception as e:
-            self.finished.emit(f"Error: {str(e)}", False)
+            self.finished.emit(f"Error: {str(e)}", False, str(e))
 
 class BulkVerificationThread(QtCore.QThread):
-    result_signal = QtCore.pyqtSignal(str, str)
+    result_signal = QtCore.pyqtSignal(str, str, str)
     all_done = QtCore.pyqtSignal()
-
+    
     def __init__(self, emails):
         super().__init__()
         self.emails = emails
         self.is_running = True
-        self._pause_event = threading.Event()
-        self._pause_event.set()  # not paused initially
-
+        
     def run(self):
-        emails = [e for e in self.emails if e]
-        batch_size = 100
-
-        for i in range(0, len(emails), batch_size):
-            # Block before submitting each batch so no new network calls
-            # are made while paused.
-            self._pause_event.wait()
-            if not self.is_running:
-                break
-
-            batch = emails[i:i + batch_size]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
-                future_to_email = {
-                    executor.submit(self.verify_single_email, email): email
-                    for email in batch
-                }
-
-                for future in concurrent.futures.as_completed(future_to_email):
-                    # Block result collection while paused
-                    self._pause_event.wait()
-
-                    if not self.is_running:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-
-                    email = future_to_email[future]
-                    try:
-                        status = future.result()
-                    except Exception as e:
-                        status = f"Error: {str(e)}"
-
-                    self.result_signal.emit(email, status)
-
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+            future_to_email = {executor.submit(self.verify_single_email, email): email for email in self.emails if email}
+            
+            for future in concurrent.futures.as_completed(future_to_email):
                 if not self.is_running:
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
-
+                    
+                email = future_to_email[future]
+                try:
+                    status, smtp_message = future.result()
+                except Exception as e:
+                    status = f"Error: {str(e)}"
+                    smtp_message = str(e)
+                
+                self.result_signal.emit(email, status, smtp_message)
+                
         if self.is_running:
             self.all_done.emit()
 
     def verify_single_email(self, email):
-        # Block here while paused so no new network calls are made
-        self._pause_event.wait()
         try:
             if not is_valid_email_syntax(email):
-                return "Invalid (Syntax)"
-
+                return "Invalid (Syntax)", "Email syntax validation failed"
+            
             domain = email.split('@')[1]
             if not has_mx_record(domain):
-                return "Invalid (No MX)"
-
-            if not verify_email_smtp(email):
-                return "Invalid (SMTP)"
-
-            return "Valid"
+                return "Invalid (No MX)", "Domain does not have MX records"
+            
+            is_valid, smtp_message = verify_email_smtp(email)
+            if not is_valid:
+                return "Invalid (SMTP)", smtp_message
+            
+            return "Valid", smtp_message
         except Exception as e:
-            return f"Error: {str(e)}"
-
-    def pause(self):
-        self._pause_event.clear()
-
-    def resume(self):
-        self._pause_event.set()
+            return f"Error: {str(e)}", str(e)
 
     def stop(self):
         self.is_running = False
-        self._pause_event.set()  # unblock if paused so the thread can exit
 
 class EmailValidatorApp(QtWidgets.QWidget):
     def __init__(self):
@@ -385,9 +206,21 @@ class EmailValidatorApp(QtWidgets.QWidget):
         self.bulk_thread = None
         self.single_worker_thread = None
 
+        # Stopwatch for bulk verification
+        self._elapsed_timer = QtCore.QTimer()
+        self._elapsed_timer.timeout.connect(self._update_elapsed_time)
+        self._elapsed_seconds = 0
+        self._total_emails = 0
+        self._verified_count = 0
+
     def init_ui(self):
         self.setWindowTitle("KnowEmail")
         self.setMinimumSize(600, 500)
+        
+        # Set window icon
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(current_dir, '..', 'favicon.ico')
+        self.setWindowIcon(QtGui.QIcon(icon_path))
 
         # Main layout
         main_layout = QtWidgets.QVBoxLayout()
@@ -487,53 +320,97 @@ class EmailValidatorApp(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to read file: {str(e)}")
             return
             
-        # Stop any previous run BEFORE reassigning self.results_dialog so that
-        # stale result_signal emissions from the old thread cannot land in the
-        # new dialog (update_results uses self.results_dialog by reference).
-        if self.bulk_thread and self.bulk_thread.isRunning():
-            self.bulk_thread.stop()
-            self.bulk_thread.wait()
+        if hasattr(self, 'results_dialog'):
+            try:
+                self.results_dialog.finished.disconnect(self._elapsed_timer.stop)
+            except TypeError:
+                pass  # already disconnected
 
-        self.results_dialog = ResultDialog(total_emails=len(emails), parent=self)
+        self.results_dialog = ResultDialog(self)
+        self.results_dialog.finished.connect(self._elapsed_timer.stop)
         self.results_dialog.show()
+        self._bulk_results = []
+        self._smtp_messages = []
+
+        # Start verification in background
+        if self.bulk_thread and self.bulk_thread.isRunning():
+             self.bulk_thread.stop()
+             self.bulk_thread.wait()
+
+        self._total_emails = len(emails)
+        self._verified_count = 0
+        self._elapsed_seconds = 0
+        self._elapsed_timer.start(1000)
 
         self.bulk_thread = BulkVerificationThread(emails)
-        self.bulk_thread.result_signal.connect(self.update_results)
-        self.bulk_thread.all_done.connect(self.on_bulk_done)
-
-        # Wire the pause/resume button in the dialog to the thread
-        self.results_dialog.set_pause_callback(self._on_pause_requested)
-
+        self.bulk_thread.result_signal.connect(self.update_results, QtCore.Qt.QueuedConnection)
+        self.bulk_thread.all_done.connect(self.on_bulk_all_done)
         self.bulk_thread.start()
 
-    def _on_pause_requested(self, paused: bool):
-        """Called by ResultDialog when the Pause/Resume button is toggled."""
-        if self.bulk_thread and self.bulk_thread.isRunning():
-            if paused:
-                self.bulk_thread.pause()
-            else:
-                self.bulk_thread.resume()
-
-    def on_bulk_done(self):
-        """Called when all bulk verification is complete."""
-        if hasattr(self, 'results_dialog') and self.results_dialog:
-            self.results_dialog.stop_timer()
-            self.results_dialog.setWindowTitle(
-                f"Done — {self.results_dialog.processed} / {self.results_dialog.total} emails verified"
-            )
-        self.show_completion_popup()
-
-    def show_completion_popup(self):
-        QtWidgets.QMessageBox.information(
+    def on_bulk_all_done(self):
+        self._elapsed_timer.stop()
+        h = self._elapsed_seconds // 3600
+        m = (self._elapsed_seconds % 3600) // 60
+        s = self._elapsed_seconds % 60
+        elapsed_str = f"{h}:{m:02d}:{s:02d}"
+        reply = QtWidgets.QMessageBox.question(
             self,
             "Process Complete",
-            "All emails from the file have been checked!",
-            QtWidgets.QMessageBox.Ok
+            f"All {self._total_emails} emails have been checked!\n"
+            f"⏱ Total time: {elapsed_str}\n\n"
+            f"Would you like to export the results to CSV?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.export_bulk_results_csv()
+
+    def export_bulk_results_csv(self):
+        if not self._bulk_results:
+            return
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Verification Results",
+            "email_verification_results.csv",
+            "CSV File (*.csv)"
         )
 
-    def update_results(self, email, status):
-        if hasattr(self, 'results_dialog') and self.results_dialog:
-            self.results_dialog.add_row(email, status)
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Email", "Status", "SMTP Message"])
+                # Combine results with SMTP messages
+                combined_results = [
+                    (email, status, smtp_msg) 
+                    for (email, status), smtp_msg in zip(self._bulk_results, self._smtp_messages)
+                ]
+                writer.writerows(combined_results)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Export Error", f"Failed to save CSV: {str(e)}")
+
+    def update_results(self, email, status, smtp_message):
+        self._bulk_results.append((email, status))
+        # Clean the SMTP message for display
+        clean_message = clean_smtp_message(smtp_message)
+        self._smtp_messages.append(clean_message)
+        self.results_dialog.add_row(email, status, clean_message)
+        self._verified_count += 1
+        self._refresh_status_label()
+
+    def _update_elapsed_time(self):
+        self._elapsed_seconds += 1
+        self._refresh_status_label()
+
+    def _refresh_status_label(self):
+        h = self._elapsed_seconds // 3600
+        m = (self._elapsed_seconds % 3600) // 60
+        s = self._elapsed_seconds % 60
+        elapsed_str = f"{h}:{m:02d}:{s:02d}"
+        if getattr(self, 'results_dialog', None) and self.results_dialog.isVisible():
+            self.results_dialog.update_status(elapsed_str, self._verified_count, self._total_emails)
 
     def apply_styles(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -574,15 +451,23 @@ class EmailValidatorApp(QtWidgets.QWidget):
         
         self.single_worker_thread.start()
 
-    def handle_single_verification_result(self, message, is_valid):
+    def handle_single_verification_result(self, message, is_valid, smtp_message):
         self.verifying_timer.stop()
         self.result_label.setText("")
         self.validate_button.setEnabled(True)
         self.email_input.setEnabled(True)
         
-        self.show_popup(message)
+        # Clean the SMTP message for display
+        clean_message = clean_smtp_message(smtp_message)
+        # Show status and cleaned message
+        if is_valid:
+            display_msg = 'Email is valid and appears to be reachable\n\n' + clean_message
+        else:
+            display_msg = 'Email verification failed.\n\n' + 'Reason: ' + clean_message
+        self.show_popup(display_msg)
 
     def show_popup(self, message):
+        self.verifying_timer.stop()
         self.result_label.setText("")
     
         msg = QtWidgets.QMessageBox(self)
