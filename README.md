@@ -18,10 +18,6 @@ Maintainer - [@Deadpool2000](https://github.com/Deadpool2000)
 [![GitHub contributors](https://img.shields.io/github/contributors/OpenInitia/KnowEmail)](https://github.com/OpenInitia/KnowEmail/graphs/contributors)
 [![GitHub license](https://img.shields.io/github/license/OpenInitia/KnowEmail)](https://github.com/OpenInitia/KnowEmail/blob/main/LICENSE)
 
-
-<picture>
-  <img alt="knowemaill logo" src="src/knowemail.png" width="60%">
-</picture>
 </div>
 
 KnowEmail is a robust, open-source email verification and validation tool designed to ensure that email addresses in their applications are valid, safe, and properly formatted. Whether you're looking to reduce spam, improve data quality, or simply verify user input, KnowEmail offers a reliable solution for your email verification needs.
