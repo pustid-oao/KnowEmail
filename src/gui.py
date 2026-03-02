@@ -1,6 +1,5 @@
 import os
 import csv
-import webbrowser
 import concurrent.futures
 import re
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -394,12 +393,34 @@ class EmailValidatorApp(QtWidgets.QWidget):
         
         # Replace font-family in stylesheet with custom font
         custom_font = getattr(self, '_custom_font_family', 'Consolas')
+        print(f"[DEBUG] apply_styles: Replacing font with: {custom_font}")
         style_content = style_content.replace(
             "font-family: 'Segoe UI', Arial, sans-serif;",
             f"font-family: '{custom_font}', Consolas, monospace;"
         )
         
         self.setStyleSheet(style_content)
+
+    def apply_styles_to_widget(self, widget):
+        """Apply stylesheet with custom font to any widget (e.g., QMessageBox)."""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        style_path = os.path.join(current_dir, 'styles.qss')
+        with open(style_path, 'r') as f:
+            style_content = f.read()
+        
+        # Check for invalid properties
+        if 'display:' in style_content:
+            print("[DEBUG] WARNING: 'display' property found in stylesheet - this is NOT valid in Qt QSS!")
+        
+        # Replace font-family in stylesheet with custom font
+        custom_font = getattr(self, '_custom_font_family', 'Consolas')
+        print(f"[DEBUG] apply_styles_to_widget: Applying font: {custom_font}")
+        style_content = style_content.replace(
+            "font-family: 'Segoe UI', Arial, sans-serif;",
+            f"font-family: '{custom_font}', Consolas, monospace;"
+        )
+        
+        widget.setStyleSheet(style_content)
 
     def update_verifying_text(self):
         dots = '.' * self.verifying_counter
@@ -437,7 +458,6 @@ class EmailValidatorApp(QtWidgets.QWidget):
 
     def handle_single_verification_result(self, message, is_valid, smtp_message):
         self.verifying_timer.stop()
-        self.result_label.setText("")
         self.validate_button.setText("Check")
         self.validate_button.setEnabled(True)
         self.email_input.setEnabled(True)
@@ -453,7 +473,6 @@ class EmailValidatorApp(QtWidgets.QWidget):
 
     def show_popup(self, message):
         self.verifying_timer.stop()
-        self.result_label.setText("")
         self.validate_button.setText("Check")
     
         msg = QtWidgets.QMessageBox(self)
@@ -461,11 +480,8 @@ class EmailValidatorApp(QtWidgets.QWidget):
         msg.setText(message)
         msg.setWindowTitle("Validation Result")
         
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        style_path = os.path.join(current_dir, 'styles.qss')
-        if os.path.exists(style_path):
-            with open(style_path, 'r') as f:
-                msg.setStyleSheet(f.read())
+        # Apply stylesheet with custom font using the helper method
+        self.apply_styles_to_widget(msg)
         
         msg.exec_()
 

@@ -29,7 +29,6 @@ QLabel, QLineEdit, QPushButton, QMessageBox {
 #description {
     font-size: 18px;
     color: #34495e;
-    line-height: 1.4;
     margin-bottom: 20px;  /* Decreased margin-bottom */
 }
 
@@ -47,6 +46,12 @@ QLabel, QLineEdit, QPushButton, QMessageBox {
 #emailInput:focus {
     border-color: #3498db;
     background-color: #ffffff;
+}
+
+/* Email input styling when verifying (darker background) */
+#emailInput:disabled {
+    background-color: #d5d8dc;
+    color: #7f8c8d;
 }
 
 /* Force text color for all QLineEdit widgets */
@@ -88,7 +93,8 @@ QMessageBox {
 
 QMessageBox QLabel {
     color: #2c3e50 !important;
-    font-size: 19px;
+    font-size: 16px;
+    padding: 5px 10px 0px 0px;
 }
 
 QMessageBox QPushButton {
@@ -109,9 +115,8 @@ QMessageBox QPushButton:focus {
     outline: none;
 }
 
-QMessageBox QLabel#qt_msgboxex_icon_label {
-    display: none;
-}
+/* Note: Hiding icon label via QSS is not supported in Qt.
+   Use QMessageBox.setIconPixmap(QtGui.QPixmap()) in code instead. */
 
 /* Force text color for all push buttons */
 QPushButton {
