@@ -64,7 +64,7 @@ QLineEdit {
     border-radius: 6px;
     font-size: 18px;
     font-weight: bold;
-    min-width: 120px;  /* Decreased min-width */
+    min-width: 160px;  /* Decreased min-width */
 }
 
 #checkButton:hover {
