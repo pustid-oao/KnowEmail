@@ -393,7 +393,6 @@ class EmailValidatorApp(QtWidgets.QWidget):
         
         # Replace font-family in stylesheet with custom font
         custom_font = getattr(self, '_custom_font_family', 'Consolas')
-        print(f"[DEBUG] apply_styles: Replacing font with: {custom_font}")
         style_content = style_content.replace(
             "font-family: 'Segoe UI', Arial, sans-serif;",
             f"font-family: '{custom_font}', Consolas, monospace;"
@@ -409,12 +408,8 @@ class EmailValidatorApp(QtWidgets.QWidget):
             style_content = f.read()
         
         # Check for invalid properties
-        if 'display:' in style_content:
-            print("[DEBUG] WARNING: 'display' property found in stylesheet - this is NOT valid in Qt QSS!")
-        
         # Replace font-family in stylesheet with custom font
         custom_font = getattr(self, '_custom_font_family', 'Consolas')
-        print(f"[DEBUG] apply_styles_to_widget: Applying font: {custom_font}")
         style_content = style_content.replace(
             "font-family: 'Segoe UI', Arial, sans-serif;",
             f"font-family: '{custom_font}', Consolas, monospace;"
