@@ -12,8 +12,16 @@ def clean_smtp_message(message):
     """Clean SMTP message by removing enhanced status code prefixes like \n5.1.1"""
     if not message:
         return message
+    # Handle escaped newlines (\n as two characters) first
+    cleaned = message.replace('\\n5.1.1', ' ')
+    cleaned = cleaned.replace('\\n4.2.2', ' ')
+    # Remove specific SMTP status code patterns for cleaner display
+    # Handle 5.1.1 (mailbox does not exist)
+    cleaned = cleaned.replace('\n5.1.1', ' ')
+    # Handle 4.2.2 (mailbox over quota / out of storage)
+    cleaned = cleaned.replace('\n4.2.2', ' ')
     # Remove newlines followed by status code pattern (e.g., \n5.1.1, \n4.2.0)
-    cleaned = re.sub(r'\n\d+\.\d+\.\d+\s*', ' ', message)
+    cleaned = re.sub(r'\n\d+\.\d+\.\d+\s*', ' ', cleaned)
     # Also remove status code at the beginning of the message
     cleaned = re.sub(r'^\d+\.\d+\.\d+\s*', '', cleaned)
     # Replace remaining newlines with spaces
@@ -155,7 +163,7 @@ class BulkVerificationThread(QtCore.QThread):
         self.is_running = True
         
     def run(self):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=75) as executor:
             future_to_email = {executor.submit(self.verify_single_email, email): email for email in self.emails if email}
             
             for future in concurrent.futures.as_completed(future_to_email):
