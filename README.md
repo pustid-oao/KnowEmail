@@ -4,13 +4,12 @@
   <img alt="knowemaill logo" src="src/logo.png" width="100%">
 </picture>
 
-An Open Source Email Verifier &amp; Validator.
+An Open Source Email Verifier & Validator.
 <h3>
 
 By [OpenInitia](https://github.com/OpenInitia)
-</h3>
 
-Maintainer - [@Deadpool2000](https://github.com/Deadpool2000)
+</h3>
 
 [![GitHub language](https://img.shields.io/github/languages/top/OpenInitia/KnowEmail)](https://github.com/OpenInitia/KnowEmail)
 [![GitHub Repo stars](https://img.shields.io/github/stars/OpenInitia/KnowEmail)](https://img.shields.io/github/stars/OpenInitia/KnowEmail)
@@ -20,7 +19,7 @@ Maintainer - [@Deadpool2000](https://github.com/Deadpool2000)
 
 </div>
 
-KnowEmail is a robust, open-source email verification and validation tool designed to ensure that email addresses in their applications are valid, safe, and properly formatted. Whether you're looking to reduce spam, improve data quality, or simply verify user input, KnowEmail offers a reliable solution for your email verification needs.
+KnowEmail is a robust, open-source email verification and validation tool. It verifies email addresses through syntax validation, MX record checking, and direct SMTP verification to determine if an inbox actually exists.
 
 ## Table of Contents
 
@@ -29,72 +28,64 @@ KnowEmail is a robust, open-source email verification and validation tool design
 - [Usage](#usage)
 - [Contributing](#contributing)
 - [License](#license)
-- [Contact](#contact)
 
 ## Features
 
-- **Email Syntax Validation:** Ensures the email address adheres to proper format.
-- **Domain Verification:** Checks for the existence of the email's domain and associated DNS records.
-- **MX Record Check:** Confirms that the email domain is configured to receive emails.
-- **Real-time Verification:** Provides quick and accurate results.
-- **Extensible Architecture:** Easily integrated and extended to meet custom requirements.
+- **Syntax Validation:** Ensures the email address adheres to proper format.
+- **MX Record Check:** Confirms the domain has valid DNS MX records.
+- **SMTP Verification:** Connects to mail servers to verify if the mailbox actually exists.
+- **Bulk Verification:** Verify thousands of emails from .txt or .xlsx files with parallel processing.
+- **Export Results:** Export bulk verification results to CSV.
+- **Dual Interface:** Available as both GUI (PyQt5) and CLI application.
 
 ## Installation
 
-### Clone the Repository
-
-Clone the repository to your local machine:
-
 ```bash
-git clone https://github.com/OpenInitia/KnowEmail.git
+# Clone the repository
+git clone https://github.com/pustid-oao/KnowEmail.git
 cd KnowEmail
-```
 
-### Setup Environment
-
-If using Python, install the required dependencies:
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-*Note:* If you’re integrating KnowEmail into another project or using a different language, please refer to the appropriate setup instructions in the project documentation.
-
 ## Usage
 
-You can run KnowEmail either from the command line or integrate it directly into your projects.
-
+### GUI Version
 
 ```bash
-python3 main.py
+python main.py
 ```
 
-### You can check
-1) Single Email
-2) Bulk Emails (By using .txt or .xlsx file)
+### CLI Version
 
+```bash
+# Single email verification
+python main_cli.py -e user@example.com
 
-*Tip:* Customize the script or integrate additional checks as needed for your specific application.
+# Bulk verification from file
+python main_cli.py -f emails.txt
 
-## Download Options
-We provide ready-to-use executables for Windows, macOS, and Linux. You can download the latest version from the [Releases Page](https://github.com/OpenInitia/KnowEmail/releases).
-| Platform | Format |
-|----------|--------|
-| **Windows** | `.exe` |
-| **macOS** | `.dmg`, `.app` |
-| **Linux** | `.AppImage`, `.deb` |
+# Bulk verification with CSV export
+python main_cli.py -f emails.txt -o results.csv
+
+# Interactive mode
+python main_cli.py
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-e, --email` | Single email to verify |
+| `-f, --file` | Path to email list (.txt or .xlsx) |
+| `-o, --output` | Output CSV file for results |
+| `-w, --workers` | Concurrent workers (default: 50) |
 
 ## Contributing
 
-Contributions are welcome! If you have any ideas, please contribute!
+Contributions are welcome! Please feel free to submit a Pull Request or open an issue.
 
 ## License
 
-This project is licensed under the [GNU GPL 3.0 License](LICENSE). See the LICENSE file for details.
-
-## Contact
-
-For any questions, suggestions, or support, please reach out:
-
-- **Maintainer:** [@Deadpool2000](https://github.com/Deadpool2000)
-- **Open an Issue:** [GitHub Issues](https://github.com/OpenInitia/KnowEmail/issues)
+This project is licensed under the [GNU GPL 3.0 License](LICENSE).
